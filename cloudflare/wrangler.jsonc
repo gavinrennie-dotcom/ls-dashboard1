@@ -1,0 +1,16 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "bloqit-ls-coverage-alert",
+  "main": "coverage-alert-worker.js",
+  "compatibility_date": "2026-07-13",
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "vars": {
+    "SUPPORT_TIMEZONE": "Europe/Lisbon",
+    "LOW_AGENT_THRESHOLD": "3",
+    "GOOGLE_SHEET_ID": "1Oalb_TLXZmI6jJXGhiBGngUOP-ubzg7OHrOtHFrRyCk",
+    "ALERT_CHANNEL_ID": "C09TXSZNHKQ",
+    "DASHBOARD_URL": "https://your-project.pages.dev"
+  }
+}
