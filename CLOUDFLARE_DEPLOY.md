@@ -1,164 +1,204 @@
-# Host the LS dashboard on Cloudflare
+# Deploy the continuous live-status backend
 
-This app is ready for Cloudflare Pages. The recommended route is Git integration because each push creates a deployment and non-production branches get preview URLs. Cloudflare supports GitHub and GitLab for this workflow.
+For a beginner-friendly copy/paste walkthrough, use [CLOUDFLARE_BEGINNER_SETUP.md](./CLOUDFLARE_BEGINNER_SETUP.md). The guide below is the shorter technical reference.
 
-## Before you begin
+This setup uses one D1 database shared by the Pages dashboard and a scheduled Worker. The Worker writes authoritative state; Pages only reads it.
 
-You need:
-
-- A Cloudflare account
-- A GitHub or GitLab repository
-- A Slack bot token
-- A Google API key with Google Sheets API enabled
-- The Google Sheet ID
-
-Important: the source ZIP contained a `.env` file. This copy deliberately does not extract or commit it. If that ZIP has ever been shared, rotate any real credentials it contained.
-
-## 1. Test the production build locally
+## 1. Sign in and create D1
 
 From the `ls-dashboard` folder:
 
 ```bash
-npm install
-cp .env.example .dev.vars
-```
-
-Open `.dev.vars` and replace the placeholder values:
-
-```dotenv
-SLACK_BOT_TOKEN=xoxb-your-real-token
-GOOGLE_API_KEY=your-real-google-key
-GOOGLE_SHEET_ID=your-sheet-id
-```
-
-Run the Cloudflare local preview:
-
-```bash
-npm run dev:cloudflare
-```
-
-Wrangler prints a local URL. Open it, confirm the roster loads, and refresh once. `.dev.vars` is ignored by Git and must stay local.
-
-## 2. Configure Slack
-
-1. Go to [Slack API apps](https://api.slack.com/apps) and create an app from scratch in the correct workspace.
-2. Under **OAuth & Permissions**, add the bot scopes `users.profile:read` and `users:read`.
-3. Install or reinstall the app to the workspace.
-4. Copy the `xoxb-…` Bot User OAuth Token.
-5. Put it in `.dev.vars` locally. Later, add it to Cloudflare as an encrypted secret.
-
-For the optional scheduled alert Worker, also add `chat:write` and invite the bot to the destination Slack channel.
-
-## 3. Configure Google Sheets
-
-1. Open [Google Cloud Console](https://console.cloud.google.com/).
-2. Create or select a project.
-3. Enable **Google Sheets API**.
-4. Go to **APIs & Services → Credentials → Create credentials → API key**.
-5. Restrict the key to Google Sheets API.
-6. Copy the spreadsheet ID from the URL: `https://docs.google.com/spreadsheets/d/THIS_PART/edit`.
-7. The current API-key implementation expects the roster sheet to be viewable by link. If the roster must remain private, use a service-account/OAuth implementation before deployment instead of making the sheet public.
-8. Ensure the first tab is named `roster` and the header row contains recognizable columns for agent/name, Slack/member ID, status, shift start, and shift end.
-
-## 4. Push the app to GitHub or GitLab
-
-Commit the contents of `ls-dashboard` to a repository. Do not commit `.dev.vars`, `.env`, or the original ZIP.
-
-If `ls-dashboard` is a folder inside a larger repository, keep that structure; you will set the Pages root directory in the next step.
-
-## 5. Create the Cloudflare Pages project
-
-1. In Cloudflare, open **Workers & Pages**.
-2. Select **Create application → Pages → Connect to Git**.
-3. Authorize GitHub or GitLab and choose the repository.
-4. Use these build settings:
-
-   - Framework preset: **React (Vite)** or **Vite**
-   - Production branch: `main`
-   - Build command: `npm run build`
-   - Build output directory: `dist`
-   - Root directory: leave blank if the repository starts at this app; otherwise enter `ls-dashboard`
-
-5. Add `NODE_VERSION` with value `22.12.0` (or a newer Node 22 release) as a build environment variable. Vite 8 requires Node 20.19+ or 22.12+.
-6. Select **Save and Deploy**.
-
-Cloudflare's documented Vite settings are `npm run build` and `dist`. The root `functions/` folder is automatically compiled as Pages Functions, and file-based routing maps the files to `/api/roster`, `/api/slack-status`, and `/api/health`. See [Cloudflare's Pages Git guide](https://developers.cloudflare.com/pages/get-started/git-integration/), [build configuration](https://developers.cloudflare.com/pages/configuration/build-configuration/), and [Functions routing](https://developers.cloudflare.com/pages/functions/routing/).
-
-## 6. Add production secrets
-
-The first build can complete without secrets, but live data will remain unconfirmed until these values are added.
-
-1. Open **Workers & Pages → your Pages project → Settings → Variables and Secrets**.
-2. Add these values for **Production**:
-
-   - `SLACK_BOT_TOKEN` — choose **Encrypt**
-   - `GOOGLE_API_KEY` — choose **Encrypt**
-   - `GOOGLE_SHEET_ID` — plain text is acceptable, or encrypt it
-
-3. Add the same values to **Preview** only if branch preview deployments should access live company data.
-4. Save the values.
-5. Redeploy the latest deployment, because Cloudflare requires secrets to exist before the deployment that uses them.
-
-Cloudflare documents encrypted secrets and runtime variables under [Pages Functions bindings](https://developers.cloudflare.com/pages/functions/bindings/).
-
-## 7. Verify the deployment
-
-Open the generated `https://your-project.pages.dev` URL and check:
-
-1. `/api/health` reports both integrations as `true`.
-2. The dashboard says **Roster · Connected** and **Slack · Connected**.
-3. The roster matches the sheet.
-4. BRB, lunch, and off-queue Slack emojis resolve correctly.
-5. Search, filters, refresh, auto-refresh, and mobile layout work as expected.
-
-If a Function fails, open the deployment in Cloudflare and select **View details → Functions** to stream its logs. Cloudflare's [Functions logging guide](https://developers.cloudflare.com/pages/functions/debugging-and-logging/) covers both dashboard and Wrangler access.
-
-## 8. Protect this internal dashboard with Cloudflare Access
-
-This is strongly recommended because the frontend bundle includes the fallback roster and Slack member IDs.
-
-1. Add a custom domain such as `ls.example.com` to the Pages project.
-2. In Cloudflare Zero Trust, go to **Access controls → Applications**.
-3. Create a **Self-hosted and private** application and add the custom hostname.
-4. Add an Allow policy for your company email domain or identity-provider group.
-5. Enable instant authentication if everyone uses one identity provider.
-6. Test in a private browser window; unauthenticated users should be redirected to Access.
-
-Cloudflare Access is designed to add an authentication layer to internal tools; its self-hosted application flow is documented in [Cloudflare One](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/).
-
-## 9. Optional: deploy five-minute low-coverage alerts
-
-Pages Functions do not run on a schedule, so this repository includes a small separate Cloudflare Worker in `cloudflare/`. It checks every five minutes and evaluates working hours in `Europe/Lisbon`, including daylight-saving changes.
-
-1. Edit `cloudflare/wrangler.jsonc`:
-
-   - Set `ALERT_CHANNEL_ID` to the target Slack channel ID.
-   - Set `DASHBOARD_URL` to the final Pages/custom-domain URL.
-   - Adjust `LOW_AGENT_THRESHOLD` if needed.
-
-2. Authenticate Wrangler:
-
-```bash
 npx wrangler login
+npx wrangler d1 create bloqit-ls-live
 ```
 
-3. Add the two Worker secrets:
+Copy the returned `database_id` into both `cloudflare/wrangler.jsonc` and the root `wrangler.jsonc`, replacing `REPLACE_WITH_D1_DATABASE_ID` in each file. The first binding is used by the live-sync Worker; the second is used by the Pages API.
+
+Apply the schema:
+
+```bash
+npm run db:migrate:remote
+```
+
+The migration creates the agent snapshot, status history, and backend health tables. Cloudflare documents D1 creation and migrations in [D1 get started](https://developers.cloudflare.com/d1/get-started/) and [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/).
+
+## 2. Give the Worker read-only access to the private Google Sheet
+
+The Worker reads only the `Roster` tab using `Roster!A1:G100`, which matches the supplied screenshot:
+
+- `Agent Name`
+- `Slack Member ID`
+- `Status`
+- `Current tickets`
+- `Last Assigned`
+- `Shift Start`
+- `Shift End`
+
+Only the name, Slack ID, status, and shift columns are required. Names are returned exactly as written in the sheet, including entries such as `Vikram Rajmohan Ext` and `Paulo Laranjo Ext`.
+
+The confirmed spreadsheet ID is already set in `cloudflare/wrangler.jsonc`.
+
+In [Google Cloud Console](https://console.cloud.google.com/):
+
+1. Select or create a project and enable **Google Sheets API**.
+2. Open **IAM & Admin → Service Accounts** and create a service account such as `roster-reader`.
+3. The service account does not need a project role. Open it, choose **Keys → Add key → Create new key → JSON**, and save the downloaded JSON securely.
+4. In the roster spreadsheet, select **Share** and add the JSON file's `client_email` as a **Viewer**. Share only this spreadsheet, not the containing Drive folder.
+5. Keep the JSON file private and do not add it to this project.
+
+The Worker exchanges a signed service-account assertion for an access token using only the `spreadsheets.readonly` scope. Google documents this server-to-server flow in [OAuth 2.0 for service accounts](https://developers.google.com/identity/protocols/oauth2/service-account), the scope in [Sheets API scopes](https://developers.google.com/workspace/sheets/api/scopes), and key handling in [Create and delete service-account keys](https://docs.cloud.google.com/iam/docs/keys-create-delete).
+
+## 3. Configure the Slack app
+
+In [Slack API apps](https://api.slack.com/apps):
+
+1. Open the dashboard’s Slack app.
+2. Under **OAuth & Permissions**, add bot scopes:
+   - `users.profile:read`
+   - `chat:write`
+   - `groups:read`
+3. Install or reinstall the app to the workspace.
+4. Copy the Bot User OAuth Token (`xoxb-…`).
+
+`users:read` is not required. Invite the bot to the private `support-live-alerts` channel with
+`/invite @LS Escalation Bot`. Slack requires private-channel membership before `chat.postMessage`
+can deliver the alert.
+
+The Worker uses `users.profile.get`, which reads custom status with `users.profile:read` and is documented as Tier 4 (100+ calls per minute). With the supplied 13-agent roster, the 15-second poll plus the minute reconciliation uses about 65 calls per minute. See [`users.profile.get`](https://docs.slack.dev/reference/methods/users.profile.get/).
+
+## 4. Add encrypted Worker secrets
+
+Add these values; Wrangler prompts without printing them back:
 
 ```bash
 npx wrangler secret put SLACK_BOT_TOKEN --config cloudflare/wrangler.jsonc
-npx wrangler secret put GOOGLE_API_KEY --config cloudflare/wrangler.jsonc
+jq -r '.client_email' /path/to/google-service-account.json | npx wrangler secret put GOOGLE_SERVICE_ACCOUNT_EMAIL --config cloudflare/wrangler.jsonc
+jq -r '.private_key' /path/to/google-service-account.json | npx wrangler secret put GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY --config cloudflare/wrangler.jsonc
+SYNC_SECRET=$(openssl rand -hex 32)
+printf '%s' "$SYNC_SECRET" | npx wrangler secret put SYNC_SECRET --config cloudflare/wrangler.jsonc
 ```
 
-4. Deploy the alert Worker:
+Replace `/path/to/google-service-account.json` with the downloaded file's actual path. Piping the JSON values avoids displaying the private key or damaging its multiline formatting. If `jq` is unavailable, run each `wrangler secret put` command without the pipe and enter the matching `client_email` or `private_key` value when prompted.
+
+`SYNC_SECRET` protects the optional manual `/sync` endpoint. Cloudflare recommends encrypted Worker secrets and supports piped input; see [Workers secrets](https://developers.cloudflare.com/workers/configuration/secrets/) and [`wrangler secret put`](https://developers.cloudflare.com/workers/wrangler/commands/workers/).
+
+## 5. Deploy the live-sync Worker
 
 ```bash
-npm run deploy:alerts
+npm run deploy:sync
 ```
 
-5. In **Workers & Pages → bloqit-ls-coverage-alert → Settings → Triggers**, confirm the `*/5 * * * *` Cron Trigger.
+Wrangler returns a URL similar to:
 
-Cron expressions run in UTC, but the Worker converts the scheduled time to Lisbon before applying shifts and business hours. Cloudflare's current Cron Trigger setup is documented in [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/).
+```text
+https://bloqit-ls-live-sync.<your-subdomain>.workers.dev
+```
 
-## Future updates
+The Worker contains one SQLite-backed Durable Object that polls Slack every 15 seconds. The included `* * * * *` Cron Trigger independently reconciles the Google roster, Slack, and shifts once per minute and restarts the poller if necessary. Cloudflare documents fine-grained recurring alarms in [Durable Object alarms](https://developers.cloudflare.com/durable-objects/api/alarms/) and the backup schedule in [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/).
 
-Push changes to `main` to deploy production automatically. Other branches receive preview deployments without changing production. Avoid enabling live secrets on previews unless the reviewers need real Slack and roster data.
+The 15-second path is transition-only: an unchanged poll performs D1 reads but schedules no D1
+writes. Agent rows are persisted only for actual roster, Slack, availability, or error changes; alert
+state follows the same rule. The minute reconciliation normally writes one health row, leaving a
+stable 13-person roster at roughly 1,440 D1 table-row writes per day plus real changes instead of more
+than 125,000 repeated table-row writes.
+
+Check Worker health:
+
+```text
+https://bloqit-ls-live-sync.<your-subdomain>.workers.dev/health
+```
+
+## 6. Run the first sync and start the 15-second poller
+
+Use the `SYNC_SECRET` created in step 4:
+
+```bash
+curl -fsS -X POST \
+  -H "Authorization: Bearer $SYNC_SECRET" \
+  https://bloqit-ls-live-sync.<your-subdomain>.workers.dev/sync
+```
+
+The response should show `ok: true`, zero Slack failures, and `poller.running: true`. The poller then reschedules itself after each run; the minute Cron also checks that it remains scheduled.
+
+Validate the alert destination without sending a message:
+
+```bash
+curl -fsS -X POST \
+  -H "Authorization: Bearer $SYNC_SECRET" \
+  https://bloqit-ls-live-sync.<your-subdomain>.workers.dev/alerts/validate
+```
+
+The result should identify `support-live-alerts` and show `private: true` and `member: true`.
+
+After validation succeeds, perform one explicit end-to-end delivery test:
+
+```bash
+curl -fsS -X POST \
+  -H "Authorization: Bearer $SYNC_SECRET" \
+  https://bloqit-ls-live-sync.<your-subdomain>.workers.dev/alerts/test
+```
+
+The protected route posts a clearly labelled `No action required` test message through the same
+Worker, bot token, and private channel. It does not modify real availability or alert state.
+
+## 7. Deploy Pages with the same D1 database
+
+The root `wrangler.jsonc` already defines the `DB` binding. After replacing its database ID in step 1, deploy the dashboard and its API Functions together:
+
+```bash
+npm run deploy:pages
+```
+
+This workspace reuses the existing `ls-dashboard1` Pages project. Its production URL is `https://ls-dashboard1.pages.dev`.
+
+Cloudflare requires the Pages binding name to match `env.DB`; its configuration is committed with the application so future deployments keep it. See [Pages Functions bindings](https://developers.cloudflare.com/pages/functions/bindings/), [Pages Wrangler configuration](https://developers.cloudflare.com/pages/functions/wrangler-configuration/), and [Direct Upload with Wrangler](https://developers.cloudflare.com/pages/get-started/direct-upload/).
+
+The Pages build settings remain:
+
+- Build command: `npm run build`
+- Output directory: `dist`
+- Node version: `22.12.0` or newer Node 22
+
+## 8. Protect the internal dashboard with Cloudflare Access
+
+The dashboard contains employee names, Slack IDs, and status text, so do not leave the production hostname public.
+
+1. Under **Workers & Pages → your project → Settings → General**, enable the access policy.
+2. Manage the created Access application and remove the wildcard `*` from its public-hostname subdomain. This protects the production `pages.dev` address.
+3. Return to Pages and enable the access policy again to protect preview deployment addresses.
+4. Add an **Allow** policy limited to your company email domain, identity-provider group, or named support-team members.
+5. If using a custom domain, create a separate **Self-hosted** Access application for that full hostname with the same restricted policy.
+6. Test in a private browser window: the dashboard and `/api/snapshot` must both require sign-in.
+
+Cloudflare Access acts as an identity-aware proxy and checks every request against the policy before forwarding it. See [Add web applications](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/), [Enable Access on pages.dev](https://developers.cloudflare.com/pages/platform/known-issues/#enable-access-on-your-pagesdev-domain), and [Pages preview access](https://developers.cloudflare.com/pages/configuration/preview-deployments/).
+
+## 9. Verify the deployment
+
+Verify:
+
+1. Open `https://YOUR-PAGES-DOMAIN/api/health` and confirm `backend: d1-live-sync`.
+2. Open `https://YOUR-PAGES-DOMAIN/api/snapshot` and confirm the names match the sheet exactly.
+3. Open the dashboard; Roster and Slack should both show `connected`.
+4. Change one rostered user’s Slack status emoji or text.
+5. The 15-second poller should detect the new Slack value; the dashboard displays it on its next five-second snapshot read.
+6. The agent’s `HH:MM:SS` counter resets and `changes today` increments once.
+7. Repeated polls with an unchanged Slack value do not increment the counter again.
+8. Set `:brb-2:` and `:knife_fork_plate:` on test users and confirm they appear as separate BRB and
+   Lunch totals, filters, colors, and history entries.
+
+Allow up to about 20 seconds for the normal poll-and-display cycle. A Slack change that is made and reverted entirely between two polls can still be missed; obtaining `users:read` and enabling `user_change` is the only native event-driven way to close that edge case.
+
+## Accuracy behavior
+
+- A failed Google read never activates a fallback roster or overwrites the last confirmed roster.
+- Slack profiles are checked approximately every 15 seconds in the backend using `users.profile:read`.
+- Slack data older than 150 seconds becomes `Unconfirmed`, never `In queue`.
+- Resolved availability, roster Active/Inactive, Slack emoji, and Slack text transitions reset the backend timestamp; shift boundaries count when they change availability.
+- Every transition uses Lisbon time regardless of the browser or Cloudflare data-center timezone.
+- Status-change history is retained for 30 days.
+- The browser refresh button only rereads D1. It does not determine or mutate agent status.
+- A serialized backend evaluator posts one warning to `support-live-alerts` when confirmed
+  availability crosses from 3 or more to fewer than 3, then one recovery when it returns to 3 or
+  more. It runs only during the weekday 09:00–16:00 Lisbon alert window, never sends a broad mention, and suppresses alerts
+  whenever roster or Slack data cannot be confirmed.

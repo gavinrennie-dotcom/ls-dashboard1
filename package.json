@@ -6,9 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test": "node --test",
     "preview": "vite preview",
     "dev:cloudflare": "npm run build && wrangler pages dev dist",
-    "deploy:alerts": "wrangler deploy --config cloudflare/wrangler.jsonc"
+    "deploy:pages": "npm run build && wrangler pages deploy dist --project-name ls-dashboard1",
+    "deploy:sync": "wrangler deploy --config cloudflare/wrangler.jsonc",
+    "db:migrate:local": "wrangler d1 migrations apply bloqit-ls-live --local --config cloudflare/wrangler.jsonc",
+    "db:migrate:remote": "wrangler d1 migrations apply bloqit-ls-live --remote --config cloudflare/wrangler.jsonc"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
