@@ -8,10 +8,18 @@ import {
 } from "../shared/availability.js";
 
 export const ALERT_RETRY_MS = 60_000;
-// Coverage must stay below (or back at/above) target for this long — measured
-// across the unchanged 15-second polls — before a Slack message is sent.
-export const LOW_HOLD_MS = 120_000;
+// Coverage must stay below target for LOW_HOLD_MS (alert) or back at/above it
+// for RECOVERY_HOLD_MS (recovery) — measured across the 15-second polls.
+export const LOW_HOLD_MS = 60_000;
 export const RECOVERY_HOLD_MS = 120_000;
+
+// Optional overrides without a code change: Worker vars LOW_HOLD_SECONDS and
+// RECOVERY_HOLD_SECONDS (0–600). Invalid values fall back to the defaults.
+export function holdMsFromEnv(value, fallback) {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds >= 0 && seconds <= 600 ? Math.round(seconds * 1000) : fallback;
+}
 const OPEN_EPISODE_STATES = new Set(["low", "recovery_candidate", "recovery_pending", "close_pending"]);
 export const ROSTER_FRESHNESS_MS = 180_000;
 export const SLACK_ALERT_CHANNEL_NAME = "support-live-alerts";
@@ -386,6 +394,8 @@ export async function evaluateCoverageAlert(env, pollResult, evaluatedTime = Dat
     pendingSince: previous.pending_since,
     now,
     timeZone,
+    lowHoldMs: holdMsFromEnv(env.LOW_HOLD_SECONDS, LOW_HOLD_MS),
+    recoveryHoldMs: holdMsFromEnv(env.RECOVERY_HOLD_SECONDS, RECOVERY_HOLD_MS),
   });
   const result = (extra) => ({ ...counts, threshold, ...extra });
 

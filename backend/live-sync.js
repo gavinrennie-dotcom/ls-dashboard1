@@ -363,7 +363,7 @@ export async function syncLiveState(env, scheduledTime = Date.now()) {
   };
 }
 
-export async function pollSlackStatuses(env, observedTime = Date.now()) {
+export async function pollSlackStatuses(env, observedTime = Date.now(), options = {}) {
   if (!env.DB) throw new Error("D1 binding DB is not configured");
   if (!env.SLACK_BOT_TOKEN) throw new Error("SLACK_BOT_TOKEN is not configured");
 
@@ -384,6 +384,28 @@ export async function pollSlackStatuses(env, observedTime = Date.now()) {
     shiftEnd: row.shift_end,
     lastRosterSyncAt: row.last_roster_sync_at,
   }));
+
+  // Apply Active/Inactive and shift changes from the Google roster on every
+  // 15-second poll, so a roster edit counts within seconds instead of waiting
+  // for the minute reconcile. Adding or removing agents stays with the
+  // reconcile. If the sheet cannot be read, this poll uses the stored roster.
+  let rosterRead = "ok";
+  try {
+    const sheet = await (options.fetchRoster || fetchGoogleRoster)(env);
+    const bySlackId = new Map(sheet.map((agent) => [agent.slackId, agent]));
+    for (const agent of agents) {
+      const fromSheet = bySlackId.get(agent.slackId);
+      if (!fromSheet) continue;
+      agent.name = fromSheet.name;
+      agent.rosterStatus = fromSheet.rosterStatus;
+      agent.shiftStart = fromSheet.shiftStart;
+      agent.shiftEnd = fromSheet.shiftEnd;
+    }
+  } catch (error) {
+    rosterRead = "failed";
+    console.warn("Fast roster read failed; using the stored roster", error.message);
+  }
+
   const { observations, slackSuccesses, slackFailures } = await observeSlackProfiles(
     env,
     agents,
@@ -423,6 +445,7 @@ export async function pollSlackStatuses(env, observedTime = Date.now()) {
   return {
     ok: true,
     source: "15_second_poll",
+    rosterRead,
     rosterCount: rows.length,
     slackSuccesses,
     slackFailures,

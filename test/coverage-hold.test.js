@@ -61,10 +61,10 @@ async function run(h, startAt, seconds, available) {
   return startAt + seconds * 1000;
 }
 
-test("hold periods are two minutes and polling stays at 15 seconds", () => {
-  assert.equal(LOW_HOLD_MS, 120_000);
+test("alert after 1 minute low, recovery after 2 minutes; polling stays at 15 seconds", () => {
+  assert.equal(LOW_HOLD_MS, 60_000);
   assert.equal(RECOVERY_HOLD_MS, 120_000);
-  assert.equal(LOW_HOLD_MS / POLL_MS, 8);
+  assert.equal(LOW_HOLD_MS / POLL_MS, 4);
 });
 
 test("a one-poll dip below target (9 Nov 12:25 replay) posts nothing", async () => {
@@ -76,18 +76,18 @@ test("a one-poll dip below target (9 Nov 12:25 replay) posts nothing", async () 
   assert.equal(h.db.alert.state, "normal");
 });
 
-test("short flapping under two minutes never alerts", async () => {
+test("short flapping under one minute never alerts", async () => {
   const h = harness({ available: 4 });
   let t = peak;
-  for (let i = 0; i < 6; i++) { t = await run(h, t, 90, 2); t = await run(h, t, 30, 3); }
+  for (let i = 0; i < 6; i++) { t = await run(h, t, 45, 2); t = await run(h, t, 30, 3); }
   assert.equal(h.slack.length, 0);
 });
 
 test("sustained low alerts once after two minutes; recovery threads under it and edits the root", async () => {
   const h = harness({ available: 4 });
-  let t = await run(h, peak, 105, 2);          // 1:45 below target: still waiting
+  let t = await run(h, peak, 45, 2);           // 0:45 below target: still waiting
   assert.equal(h.slack.length, 0);
-  t = await run(h, t, 30, 2);                  // crosses 2:00
+  t = await run(h, t, 30, 2);                  // crosses 1:00
   assert.equal(h.slack.length, 1);
   assert.equal(h.slack[0].method, "chat.postMessage");
   assert.equal(h.slack[0].body.thread_ts, undefined);
@@ -113,7 +113,7 @@ test("sustained low alerts once after two minutes; recovery threads under it and
 
 test("an alert still open at 16:00 is closed by editing it (9 Nov 15:45 replay)", async () => {
   const h = harness({ available: 2 });
-  const lowAt = Date.parse("2026-11-09T15:45:26.000Z") - 120_000;
+  const lowAt = Date.parse("2026-11-09T15:45:26.000Z") - 60_000;
   let t = await run(h, lowAt, 135, 2);
   assert.equal(h.slack.length, 1);
   const root = h.db.alert.last_message_ts;
@@ -137,9 +137,27 @@ test("next morning starts clean: below target at 09:00 waits the hold period", (
 
 test("failed Slack post keeps the claim and retries after a minute", async () => {
   const h = harness({ available: 2 });
-  let t = await run(h, peak, 120, 2);
+  let t = await run(h, peak, 60, 2);
   globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: false, error: "ratelimited" }) });
   await h.poll(t); t += POLL_MS;
   assert.equal(h.db.alert.state, "low_pending");
   assert.equal(h.db.alert.last_error, "ratelimited");
+});
+
+test("today's 13:00 replay: alert about a minute after coverage drops", async () => {
+  const h = harness({ available: 3 });
+  const drop = Date.parse("2026-11-10T13:00:51.000Z");   // Joao counted inactive
+  await run(h, drop - 60_000, 60, 3);
+  await run(h, drop, 75, 2);
+  assert.equal(h.slack.length, 1);
+  assert.ok(Number(h.db.alert.alert_sent_at) - drop <= 75_000);
+});
+
+test("hold overrides from Worker vars are bounded", async () => {
+  const { holdMsFromEnv } = await import("../backend/coverage-alerts.js");
+  assert.equal(holdMsFromEnv(undefined, 60_000), 60_000);
+  assert.equal(holdMsFromEnv("30", 60_000), 30_000);
+  assert.equal(holdMsFromEnv("0", 60_000), 0);
+  assert.equal(holdMsFromEnv("9999", 60_000), 60_000);
+  assert.equal(holdMsFromEnv("abc", 60_000), 60_000);
 });
