@@ -8,6 +8,11 @@ import {
 } from "../shared/availability.js";
 
 export const ALERT_RETRY_MS = 60_000;
+// Coverage must stay below (or back at/above) target for this long — measured
+// across the unchanged 15-second polls — before a Slack message is sent.
+export const LOW_HOLD_MS = 120_000;
+export const RECOVERY_HOLD_MS = 120_000;
+const OPEN_EPISODE_STATES = new Set(["low", "recovery_candidate", "recovery_pending", "close_pending"]);
 export const ROSTER_FRESHNESS_MS = 180_000;
 export const SLACK_ALERT_CHANNEL_NAME = "support-live-alerts";
 export {
@@ -30,61 +35,84 @@ export function getCoverageAlertDecision({
   availableCount,
   threshold = LOW_AGENT_THRESHOLD,
   lastAttemptAt = null,
+  pendingSince = null,
   now = Date.now(),
   timeZone = SUPPORT_TIMEZONE,
+  lowHoldMs = LOW_HOLD_MS,
+  recoveryHoldMs = RECOVERY_HOLD_MS,
 }) {
   const date = new Date(now);
   const target = parseThreshold(threshold);
+  const current = Number(now);
+  const retryWaiting = lastAttemptAt && current - Number(lastAttemptAt) < ALERT_RETRY_MS;
+  const held = (holdMs) => pendingSince && current - Number(pendingSince) >= holdMs;
 
   if (!isCoverageAlertWindowOpen(date, timeZone)) {
+    if (OPEN_EPISODE_STATES.has(previousState)) {
+      if (previousState === "close_pending" && retryWaiting) {
+        return { action: "none", nextState: "close_pending", pendingSince: null,
+          reason: "Waiting before retrying the end-of-window close" };
+      }
+      return { action: "close_window", nextState: "close_pending", pendingSince: null,
+        reason: "Alert window closed with a low-coverage alert still open" };
+    }
     return {
       action: "none",
       nextState: "outside_hours",
+      pendingSince: null,
       reason: "Outside the weekday 09:00–16:00 alert window",
     };
   }
 
   if (Number(availableCount) < target) {
-    if (previousState === "low") {
-      return { action: "none", nextState: "low", reason: "Low alert already sent" };
+    if (["low", "recovery_candidate", "recovery_pending", "close_pending"].includes(previousState)) {
+      return { action: "none", nextState: "low", pendingSince: null, reason: "Low alert already sent" };
     }
-    if (
-      previousState === "low_pending" &&
-      lastAttemptAt &&
-      Number(now) - Number(lastAttemptAt) < ALERT_RETRY_MS
-    ) {
-      return {
-        action: "none",
-        nextState: "low_pending",
-        reason: "Waiting before retrying the low alert",
-      };
+    if (previousState === "low_pending") {
+      if (retryWaiting) {
+        return { action: "none", nextState: "low_pending", pendingSince,
+          reason: "Waiting before retrying the low alert" };
+      }
+      return { action: "low", nextState: "low_pending", pendingSince, reason: "Retrying the low alert" };
     }
-    return { action: "low", nextState: "low_pending", reason: "Coverage dropped below target" };
+    if (previousState === "low_candidate") {
+      if (held(lowHoldMs)) {
+        return { action: "low", nextState: "low_pending", pendingSince,
+          reason: "Coverage stayed below target for the hold period" };
+      }
+      return { action: "none", nextState: "low_candidate", pendingSince,
+        reason: "Coverage below target; waiting for the hold period" };
+    }
+    return { action: "none", nextState: "low_candidate", pendingSince: current,
+      reason: "Coverage dropped below target; hold period started" };
   }
 
   if (previousState === "low") {
-    return {
-      action: "recovery",
-      nextState: "recovery_pending",
-      reason: "Coverage returned to target",
-    };
+    return { action: "none", nextState: "recovery_candidate", pendingSince: current,
+      reason: "Coverage back at target; recovery hold period started" };
+  }
+  if (previousState === "recovery_candidate") {
+    if (held(recoveryHoldMs)) {
+      return { action: "recovery", nextState: "recovery_pending", pendingSince,
+        reason: "Coverage stayed at or above target for the hold period" };
+    }
+    return { action: "none", nextState: "recovery_candidate", pendingSince,
+      reason: "Coverage at target; waiting for the recovery hold period" };
   }
   if (previousState === "recovery_pending") {
-    if (lastAttemptAt && Number(now) - Number(lastAttemptAt) < ALERT_RETRY_MS) {
-      return {
-        action: "none",
-        nextState: "recovery_pending",
-        reason: "Waiting before retrying the recovery alert",
-      };
+    if (retryWaiting) {
+      return { action: "none", nextState: "recovery_pending", pendingSince,
+        reason: "Waiting before retrying the recovery alert" };
     }
-    return {
-      action: "recovery",
-      nextState: "recovery_pending",
-      reason: "Retrying the recovery alert",
-    };
+    return { action: "recovery", nextState: "recovery_pending", pendingSince,
+      reason: "Retrying the recovery alert" };
+  }
+  if (previousState === "close_pending") {
+    // Window reopened (next morning) before the close edit succeeded: drop it quietly.
+    return { action: "none", nextState: "normal", pendingSince: null, reason: "Coverage is at or above target" };
   }
 
-  return { action: "none", nextState: "normal", reason: "Coverage is at or above target" };
+  return { action: "none", nextState: "normal", pendingSince: null, reason: "Coverage is at or above target" };
 }
 
 export function buildCoverageAlertMessage({
@@ -108,6 +136,31 @@ export function buildCoverageAlertMessage({
   }
 
   return `:rotating_light: *Live Support coverage below target*\n*${availableCount} ${availableLabel} available* — minimum is ${target}.\n${onShiftCount} ${onShiftLabel} on shift · Updated ${time} Lisbon${dashboardLine}`;
+}
+
+export function buildResolvedRootMessage({
+  availableCount,
+  threshold = LOW_AGENT_THRESHOLD,
+  alertSentAt,
+  now = Date.now(),
+  timeZone = SUPPORT_TIMEZONE,
+  dashboardUrl,
+}) {
+  const target = parseThreshold(threshold);
+  const from = alertSentAt ? getSupportClock(new Date(Number(alertSentAt)), timeZone).time.slice(0, 5) : "?";
+  const to = getSupportClock(new Date(now), timeZone).time.slice(0, 5);
+  const dashboardLine = dashboardUrl ? `\n<${dashboardUrl}|Open live dashboard>` : "";
+  return `:white_check_mark: *Live Support coverage was below target ${from}–${to} Lisbon · recovered*\n*${availableCount} ${plural(availableCount, "agent")} available* — back at or above ${target}.${dashboardLine}`;
+}
+
+export function buildWindowClosedRootMessage({
+  alertSentAt,
+  timeZone = SUPPORT_TIMEZONE,
+  dashboardUrl,
+}) {
+  const from = alertSentAt ? getSupportClock(new Date(Number(alertSentAt)), timeZone).time.slice(0, 5) : "?";
+  const dashboardLine = dashboardUrl ? `\n<${dashboardUrl}|Open live dashboard>` : "";
+  return `:white_circle: *Live Support coverage below target from ${from} Lisbon · alert closed at 16:00*\nThe alert window ended before coverage recovered. Checks resume at 09:00 on the next weekday.${dashboardLine}`;
 }
 
 export function buildSlackAlertTestMessage({
@@ -145,7 +198,7 @@ async function slackApi(env, method, options = {}) {
   return data;
 }
 
-async function postCoverageAlert(env, text) {
+async function postCoverageAlert(env, text, threadTs = null) {
   if (!env.SLACK_ALERT_CHANNEL_ID) {
     throw new Error("SLACK_ALERT_CHANNEL_ID is not configured");
   }
@@ -156,7 +209,15 @@ async function postCoverageAlert(env, text) {
       text,
       unfurl_links: false,
       unfurl_media: false,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
     },
+  });
+}
+
+async function updateCoverageAlert(env, ts, text) {
+  return slackApi(env, "chat.update", {
+    method: "POST",
+    body: { channel: env.SLACK_ALERT_CHANNEL_ID, ts, text },
   });
 }
 
@@ -211,7 +272,8 @@ function stateUpdate(db, values) {
       alert_sent_at = ?6,
       recovery_sent_at = ?7,
       last_message_ts = ?8,
-      last_error = ?9
+      last_error = ?9,
+      pending_since = ?10
     WHERE id = 1
   `).bind(
     values.state,
@@ -223,6 +285,7 @@ function stateUpdate(db, values) {
     values.recoverySentAt,
     values.lastMessageTs,
     values.lastError,
+    nullable(values.pendingSince),
   );
 }
 
@@ -240,7 +303,8 @@ export function shouldPersistCoverageState(previous, values) {
     nullable(previous.alert_sent_at) !== nullable(values.alertSentAt) ||
     nullable(previous.recovery_sent_at) !== nullable(values.recoverySentAt) ||
     nullable(previous.last_message_ts) !== nullable(values.lastMessageTs) ||
-    nullable(previous.last_error) !== nullable(values.lastError)
+    nullable(previous.last_error) !== nullable(values.lastError) ||
+    nullable(previous.pending_since) !== nullable(values.pendingSince)
   );
 }
 
@@ -312,118 +376,107 @@ export async function evaluateCoverageAlert(env, pollResult, evaluatedTime = Dat
     recoverySentAt: previous.recovery_sent_at || null,
     lastMessageTs: previous.last_message_ts || null,
     lastError: null,
+    pendingSince: previous.pending_since || null,
   };
   const decision = getCoverageAlertDecision({
     previousState: previous.state,
     availableCount: counts.availableCount,
     threshold,
     lastAttemptAt: previous.last_attempt_at,
+    pendingSince: previous.pending_since,
     now,
     timeZone,
   });
+  const result = (extra) => ({ ...counts, threshold, ...extra });
 
-  if (!isCoverageAlertWindowOpen(new Date(now), timeZone)) {
-    const stateUpdated = await persistCoverageStateIfChanged(
-      env.DB,
-      previous,
-      { ...baseState, state: "outside_hours" },
-    );
-    return {
-      ok: true,
-      action: "none",
-      state: "outside_hours",
-      stateUpdated,
-      reason: decision.reason,
-      ...counts,
-      threshold,
-    };
+  // Window closed: nothing to post unless an alert is still open.
+  if (!isCoverageAlertWindowOpen(new Date(now), timeZone) && decision.action !== "close_window") {
+    const stateUpdated = await persistCoverageStateIfChanged(env.DB, previous,
+      { ...baseState, state: decision.nextState, pendingSince: null });
+    return result({ ok: true, action: "none", state: decision.nextState, stateUpdated, reason: decision.reason });
   }
 
-  const unsafeReason = getCoverageAccuracyError({ pollResult, syncState, counts, now });
-  if (unsafeReason) {
-    const stateUpdated = await persistCoverageStateIfChanged(
-      env.DB,
-      previous,
-      { ...baseState, lastError: unsafeReason },
-    );
-    return {
-      ok: false,
-      action: "suppressed",
-      state: baseState.state,
-      stateUpdated,
-      reason: unsafeReason,
-      ...counts,
-      threshold,
-    };
+  // Bad data never starts or advances an alert, but an open alert can still be closed at 16:00.
+  if (decision.action !== "close_window") {
+    const unsafeReason = getCoverageAccuracyError({ pollResult, syncState, counts, now });
+    if (unsafeReason) {
+      const stateUpdated = await persistCoverageStateIfChanged(env.DB, previous,
+        { ...baseState, lastError: unsafeReason });
+      return result({ ok: false, action: "suppressed", state: baseState.state, stateUpdated, reason: unsafeReason });
+    }
   }
 
   if (decision.action === "none") {
-    const stateUpdated = await persistCoverageStateIfChanged(
-      env.DB,
-      previous,
-      { ...baseState, state: decision.nextState },
-    );
-    return {
-      ok: true,
-      action: "none",
-      state: decision.nextState,
-      stateUpdated,
-      reason: decision.reason,
-      ...counts,
-      threshold,
-    };
+    const stateUpdated = await persistCoverageStateIfChanged(env.DB, previous,
+      { ...baseState, state: decision.nextState, pendingSince: nullable(decision.pendingSince) });
+    return result({ ok: true, action: "none", state: decision.nextState, stateUpdated, reason: decision.reason });
   }
 
+  // Claim the attempt before calling Slack so a parallel poll cannot double-post.
   await stateUpdate(env.DB, {
     ...baseState,
     state: decision.nextState,
     lastAttemptAt: now,
+    pendingSince: nullable(decision.pendingSince),
   }).run();
 
-  const text = buildCoverageAlertMessage({
-    action: decision.action,
-    availableCount: counts.availableCount,
-    onShiftCount: counts.onShiftCount,
-    threshold,
-    now,
-    timeZone,
-    dashboardUrl: env.DASHBOARD_URL,
-  });
-
+  const dashboardUrl = env.DASHBOARD_URL;
   try {
-    const message = await postCoverageAlert(env, text);
-    const finalState = decision.action === "low" ? "low" : "normal";
+    let messageTs = baseState.lastMessageTs;
+    let finalState;
+    if (decision.action === "low") {
+      const message = await postCoverageAlert(env, buildCoverageAlertMessage({
+        action: "low", availableCount: counts.availableCount, onShiftCount: counts.onShiftCount,
+        threshold, now, timeZone, dashboardUrl,
+      }));
+      messageTs = message.ts || messageTs;
+      finalState = "low";
+    } else if (decision.action === "recovery") {
+      const recoveryText = buildCoverageAlertMessage({
+        action: "recovery", availableCount: counts.availableCount, onShiftCount: counts.onShiftCount,
+        threshold, now, timeZone, dashboardUrl,
+      });
+      if (baseState.lastMessageTs) {
+        await postCoverageAlert(env, recoveryText, baseState.lastMessageTs);
+        try {
+          await updateCoverageAlert(env, baseState.lastMessageTs, buildResolvedRootMessage({
+            availableCount: counts.availableCount, threshold, alertSentAt: baseState.alertSentAt,
+            now, timeZone, dashboardUrl,
+          }));
+        } catch (error) {
+          console.warn("Recovery posted, but the original alert could not be edited", error.message);
+        }
+      } else {
+        await postCoverageAlert(env, recoveryText);
+      }
+      finalState = "normal";
+    } else {
+      if (baseState.lastMessageTs) {
+        await updateCoverageAlert(env, baseState.lastMessageTs, buildWindowClosedRootMessage({
+          alertSentAt: baseState.alertSentAt, timeZone, dashboardUrl,
+        }));
+      }
+      finalState = "outside_hours";
+    }
     await stateUpdate(env.DB, {
       ...baseState,
       state: finalState,
       lastAttemptAt: now,
       alertSentAt: decision.action === "low" ? now : baseState.alertSentAt,
       recoverySentAt: decision.action === "recovery" ? now : baseState.recoverySentAt,
-      lastMessageTs: message.ts || baseState.lastMessageTs,
+      lastMessageTs: messageTs,
+      pendingSince: null,
     }).run();
-    return {
-      ok: true,
-      action: decision.action,
-      state: finalState,
-      reason: decision.reason,
-      messageTs: message.ts || null,
-      ...counts,
-      threshold,
-    };
+    return result({ ok: true, action: decision.action, state: finalState, reason: decision.reason,
+      messageTs: messageTs || null });
   } catch (error) {
     await stateUpdate(env.DB, {
       ...baseState,
       state: decision.nextState,
       lastAttemptAt: now,
       lastError: error.message,
+      pendingSince: nullable(decision.pendingSince),
     }).run();
-    return {
-      ok: false,
-      action: "delivery_failed",
-      state: decision.nextState,
-      reason: error.message,
-      ...counts,
-      threshold,
-    };
+    return result({ ok: false, action: "delivery_failed", state: decision.nextState, reason: error.message });
   }
 }

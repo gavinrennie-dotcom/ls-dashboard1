@@ -195,15 +195,16 @@ test("coverage alerts fire only on low and recovery transitions during the alert
 
   assert.deepEqual(
     getCoverageAlertDecision({ previousState: "normal", availableCount: 2, now: mondayPeak.getTime() }),
-    { action: "low", nextState: "low_pending", reason: "Coverage dropped below target" },
+    { action: "none", nextState: "low_candidate", pendingSince: mondayPeak.getTime(),
+      reason: "Coverage dropped below target; hold period started" },
   );
   assert.equal(
     getCoverageAlertDecision({ previousState: "low", availableCount: 2, now: mondayPeak.getTime() }).action,
     "none",
   );
   assert.equal(
-    getCoverageAlertDecision({ previousState: "low", availableCount: 3, now: mondayPeak.getTime() }).action,
-    "recovery",
+    getCoverageAlertDecision({ previousState: "low", availableCount: 3, now: mondayPeak.getTime() }).nextState,
+    "recovery_candidate",
   );
   assert.deepEqual(
     getCoverageAlertDecision({
@@ -214,6 +215,7 @@ test("coverage alerts fire only on low and recovery transitions during the alert
     {
       action: "none",
       nextState: "outside_hours",
+      pendingSince: null,
       reason: "Outside the weekday 09:00–16:00 alert window",
     },
   );
