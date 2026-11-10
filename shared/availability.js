@@ -2,7 +2,12 @@ export const SUPPORT_TIMEZONE = "Europe/Lisbon";
 export const UI_POLL_SECONDS = 5;
 export const LOW_AGENT_THRESHOLD = 3;
 export const ALERT_WINDOW_START_MINUTES = 9 * 60;
-export const ALERT_WINDOW_END_MINUTES = 16 * 60;
+export const ALERT_WINDOW_END_MINUTES = 17 * 60;
+
+export function formatClockMinutes(minutes) {
+  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+export const ALERT_WINDOW_LABEL = `${formatClockMinutes(ALERT_WINDOW_START_MINUTES)}–${formatClockMinutes(ALERT_WINDOW_END_MINUTES)}`;
 
 export const BRB_EMOJIS = [":brb-2:"];
 export const LUNCH_EMOJIS = [":knife_fork_plate:"];

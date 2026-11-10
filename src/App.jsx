@@ -26,6 +26,9 @@ import {
   getCurrentBlock,
   getSupportClock,
   isCoverageAlertWindowOpen,
+  ALERT_WINDOW_END_MINUTES,
+  ALERT_WINDOW_LABEL,
+  formatClockMinutes,
 } from "./config.js";
 import StatusHistory from "./StatusHistory.jsx";
 import { STATUS, StatusPill } from "./status-ui.jsx";
@@ -562,8 +565,8 @@ export default function App() {
               <div className="window-track" aria-label="Daily coverage alert window">
                 {[
                   { key: "before", time: "Before 09:00", label: "Reduced" },
-                  { key: "active", time: "09:00–16:00", label: "Alerts on" },
-                  { key: "after", time: "From 16:00", label: "Reduced" },
+                  { key: "active", time: ALERT_WINDOW_LABEL, label: "Alerts on" },
+                  { key: "after", time: `From ${formatClockMinutes(ALERT_WINDOW_END_MINUTES)}`, label: "Reduced" },
                 ].map((item) => (
                   <div className={alertWindowStage === item.key ? "current" : ""} key={item.key}>
                     <span /><p>{item.label}</p><small>{item.time}</small>

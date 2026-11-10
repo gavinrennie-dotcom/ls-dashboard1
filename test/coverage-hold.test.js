@@ -36,7 +36,7 @@ function harness({ available = 5, state = {} } = {}) {
           { resolved_status: "inactive", count: 5 },
         ] }),
         first: async () => (/coverage_alert_state/.test(sql) ? { ...db.alert }
-          : { roster_status: "connected", roster_synced_at: Date.now(), roster_count: 12 }),
+          : { roster_status: "connected", roster_synced_at: db.clock, roster_count: 12 }),
       };
     },
   };
@@ -48,7 +48,7 @@ function harness({ available = 5, state = {} } = {}) {
     return { ok: true, json: async () => ({ ok: true }) };
   };
   const env = { DB, SLACK_BOT_TOKEN: "x", SLACK_ALERT_CHANNEL_ID: "C0B4D0H0TSR", LOW_AGENT_THRESHOLD: "3" };
-  const poll = (at) => evaluateCoverageAlert(env, { slackFailures: 0 }, at);
+  const poll = (at) => { db.clock = at; return evaluateCoverageAlert(env, { slackFailures: 0 }, at); };
   return { db, slack, poll };
 }
 
@@ -111,17 +111,17 @@ test("sustained low alerts once after two minutes; recovery threads under it and
   assert.equal(h.slack.length, 3);
 });
 
-test("an alert still open at 16:00 is closed by editing it (9 Nov 15:45 replay)", async () => {
+test("an alert still open at 17:00 is closed by editing it", async () => {
   const h = harness({ available: 2 });
-  const lowAt = Date.parse("2026-11-09T15:45:26.000Z") - 60_000;
+  const lowAt = Date.parse("2026-11-10T16:52:00.000Z") - 60_000;   // like today 15:52, one hour later
   let t = await run(h, lowAt, 135, 2);
   assert.equal(h.slack.length, 1);
   const root = h.db.alert.last_message_ts;
-  t = await run(h, t, 15 * 60, 2);             // through 16:00 Lisbon
+  t = await run(h, t, 15 * 60, 2);             // through 17:00 Lisbon
   const edit = h.slack.find((m) => m.method === "chat.update");
   assert.ok(edit, "root edited at window close");
   assert.equal(edit.body.ts, root);
-  assert.match(edit.body.text, /closed at 16:00/);
+  assert.match(edit.body.text, /closed at 17:00/);
   assert.equal(h.db.alert.state, "outside_hours");
   const count = h.slack.length;
   await run(h, t, 600, 2);                     // evening: silent
@@ -160,4 +160,14 @@ test("hold overrides from Worker vars are bounded", async () => {
   assert.equal(holdMsFromEnv("0", 60_000), 0);
   assert.equal(holdMsFromEnv("9999", 60_000), 60_000);
   assert.equal(holdMsFromEnv("abc", 60_000), 60_000);
+});
+
+test("16:00–17:00 is now inside the alert window (today's 15:52 drop would keep alerting)", () => {
+  const d = getCoverageAlertDecision({ previousState: "low", availableCount: 2,
+    now: Date.parse("2026-11-10T16:30:00.000Z") });
+  assert.equal(d.action, "none");
+  assert.equal(d.nextState, "low");
+  const after = getCoverageAlertDecision({ previousState: "low", availableCount: 2,
+    now: Date.parse("2026-11-10T17:00:00.000Z") });
+  assert.equal(after.action, "close_window");
 });

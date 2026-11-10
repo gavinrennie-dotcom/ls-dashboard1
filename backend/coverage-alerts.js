@@ -1,6 +1,8 @@
 import {
   ALERT_WINDOW_END_MINUTES,
+  ALERT_WINDOW_LABEL,
   ALERT_WINDOW_START_MINUTES,
+  formatClockMinutes,
   LOW_AGENT_THRESHOLD,
   SUPPORT_TIMEZONE,
   getSupportClock,
@@ -68,7 +70,7 @@ export function getCoverageAlertDecision({
       action: "none",
       nextState: "outside_hours",
       pendingSince: null,
-      reason: "Outside the weekday 09:00–16:00 alert window",
+      reason: `Outside the weekday ${ALERT_WINDOW_LABEL} alert window`,
     };
   }
 
@@ -168,7 +170,7 @@ export function buildWindowClosedRootMessage({
 }) {
   const from = alertSentAt ? getSupportClock(new Date(Number(alertSentAt)), timeZone).time.slice(0, 5) : "?";
   const dashboardLine = dashboardUrl ? `\n<${dashboardUrl}|Open live dashboard>` : "";
-  return `:white_circle: *Live Support coverage below target from ${from} Lisbon · alert closed at 16:00*\nThe alert window ended before coverage recovered. Checks resume at 09:00 on the next weekday.${dashboardLine}`;
+  return `:white_circle: *Live Support coverage below target from ${from} Lisbon · alert closed at ${formatClockMinutes(ALERT_WINDOW_END_MINUTES)}*\nThe alert window ended before coverage recovered. Checks resume at ${formatClockMinutes(ALERT_WINDOW_START_MINUTES)} on the next weekday.${dashboardLine}`;
 }
 
 export function buildSlackAlertTestMessage({
@@ -406,7 +408,7 @@ export async function evaluateCoverageAlert(env, pollResult, evaluatedTime = Dat
     return result({ ok: true, action: "none", state: decision.nextState, stateUpdated, reason: decision.reason });
   }
 
-  // Bad data never starts or advances an alert, but an open alert can still be closed at 16:00.
+  // Bad data never starts or advances an alert, but an open alert can still be closed at window end.
   if (decision.action !== "close_window") {
     const unsafeReason = getCoverageAccuracyError({ pollResult, syncState, counts, now });
     if (unsafeReason) {

@@ -189,8 +189,9 @@ test("coverage alerts fire only on low and recovery transitions during the alert
   assert.equal(isCoverageAlertWindowOpen(new Date("2026-07-13T07:59:00.000Z")), false); // 08:59 Lisbon
   assert.equal(isCoverageAlertWindowOpen(new Date("2026-07-13T08:00:00.000Z")), true); // 09:00 Lisbon
   assert.equal(isCoverageAlertWindowOpen(mondayPeak), true);
-  assert.equal(isCoverageAlertWindowOpen(new Date("2026-07-13T14:59:00.000Z")), true); // 15:59 Lisbon
-  assert.equal(isCoverageAlertWindowOpen(new Date("2026-07-13T15:00:00.000Z")), false); // 16:00 Lisbon
+  assert.equal(isCoverageAlertWindowOpen(new Date("2026-07-13T15:00:00.000Z")), true); // 16:00 Lisbon
+  assert.equal(isCoverageAlertWindowOpen(new Date("2026-07-13T15:59:00.000Z")), true); // 16:59 Lisbon
+  assert.equal(isCoverageAlertWindowOpen(new Date("2026-07-13T16:00:00.000Z")), false); // 17:00 Lisbon
   assert.equal(isCoverageAlertWindowOpen(new Date("2026-07-12T12:00:00.000Z")), false);
 
   assert.deepEqual(
@@ -216,7 +217,7 @@ test("coverage alerts fire only on low and recovery transitions during the alert
       action: "none",
       nextState: "outside_hours",
       pendingSince: null,
-      reason: "Outside the weekday 09:00–16:00 alert window",
+      reason: "Outside the weekday 09:00–17:00 alert window",
     },
   );
 });
